@@ -1,0 +1,14 @@
+name: Local Config
+version: 1.0.0
+schema: v1
+models: []
+
+# This is an example configuration file
+# To learn more, see the full config.yaml reference: https://docs.continue.dev/reference
+
+# Define which models can be used
+# https://docs.continue.dev/customization/models
+models:
+  - name: qwen2.5-coder-3b
+    provider: ollama
+    model: qwen2.5-coder-3b
