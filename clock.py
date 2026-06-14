@@ -9,7 +9,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 class AnalogClock(QWidget):
-    CLOCK_SIZE = 140
+    CLOCK_SIZE = 160
     # smaller gap between stacked clocks to bring faces closer together
     CLOCK_SPACING = 6
     HORIZONTAL_PADDING = 20
