@@ -7,7 +7,8 @@ A desktop analog clock application displaying multiple timezones with intelligen
 - **Dual Timezone Display**: Shows Berlin and Mumbai time zones simultaneously
 - **Auto Color Contrast**: Automatically adjusts clock color (black/white) based on background brightness
 - **Always-on-Top Toggle**: Double-click to toggle window always-on-top mode
-- **Battery Indicator**: Displays current battery percentage and charging status (AC/BAT)
+- **Hardware Stats Monitor**: Real-time display of CPU, RAM, GPU, and VRAM usage (updates every 2 seconds)
+- **Battery Indicator**: Displays current battery percentage and charging status in the hardware stats panel
 - **Draggable**: Click and drag horizontally to reposition at screen bottom
 - **Transparent Background**: 60% opacity for unobtrusive integration with desktop
 - **Smooth Animations**: Color transitions and frame-based rendering for smooth updates
@@ -17,6 +18,8 @@ A desktop analog clock application displaying multiple timezones with intelligen
 - **Linux OS** (tested on modern distributions)
 - **Python 3.12+**
 - **PyQt5** GUI framework
+- **psutil** for system resource monitoring
+- **GPUtil** for GPU monitoring (optional, gracefully falls back if unavailable)
 
 ## Installation Steps for Linux
 
@@ -81,7 +84,7 @@ pip install -r requirements.txt
 **Note**: The project includes a `requirements.txt` file with all dependencies. If you prefer to install manually:
 
 ```bash
-pip install PyQt5>=5.15.0
+pip install PyQt5>=5.15.0 psutil>=5.9.0 GPUtil>=1.4.0
 ```
 
 ### Step 7: Verify Installation
@@ -128,9 +131,12 @@ nohup venv/bin/python clock.py > clock.log 2>&1 &
 ### Display Information
 - **Top Clock**: Shows current time in Berlin timezone (Europe/Berlin)
 - **Bottom Clock**: Shows current time in Mumbai timezone (Asia/Kolkata)
-- **Battery Indicator**: Displays below the clocks showing battery percentage and power state
-  - Format: `XX% AC` (when charging) or `XX% BAT` (on battery)
-  - Shows `--% ` if battery information is unavailable
+- **Hardware Stats Panel**: Displayed on the right side of the clocks, vertically centered (updates every 2 seconds)
+  - **CPU**: Current CPU usage percentage
+  - **RAM**: Current RAM usage percentage
+  - **GPU**: Current GPU usage percentage (if GPU is available)
+  - **VRAM**: Current GPU VRAM usage percentage (if GPU is available)
+  - **Bat**: Battery percentage and power state (AC/BAT or --% if unavailable)
 
 ### Color Adjustment
 The clock automatically adjusts hand/number colors for optimal visibility:
@@ -177,6 +183,10 @@ python clock.py
 ### Battery Indicator Not Working
 
 The battery indicator reads from `/sys/class/power_supply/`. This feature works on most modern Linux systems. If it doesn't display, it's typically not available on your system.
+
+### GPU/VRAM Monitoring Not Available
+
+The application uses GPUtil to monitor NVIDIA GPUs. If GPUtil is not installed or your system doesn't have an NVIDIA GPU, the GPU and VRAM sections will display "N/A". The application will still work normally with CPU and RAM monitoring.
 
 ## Creating a Desktop Launcher (Optional)
 
@@ -240,6 +250,8 @@ analog-clock/
 The `requirements.txt` file contains:
 ```
 PyQt5>=5.15.0
+psutil>=5.9.0
+GPUtil>=1.4.0
 ```
 
 This file makes it easy to replicate the development environment or share the project with others.
@@ -251,6 +263,10 @@ This file makes it easy to replicate the development environment or share the pr
 - **PyQt5.QtWidgets**: GUI components (QApplication, QWidget)
 - **PyQt5.QtCore**: Core functionality (QTimer, signals)
 - **PyQt5.QtGui**: Graphics (QPainter, colors, fonts)
+
+### System Monitoring
+- **psutil**: Cross-platform library for retrieving information on running processes and system utilization (CPU, RAM)
+- **GPUtil**: GPU monitoring utility for NVIDIA GPUs (gracefully degrades if unavailable)
 
 ### Python Standard Library
 - `sys`: System-specific parameters
@@ -264,6 +280,7 @@ This file makes it easy to replicate the development environment or share the pr
 
 - **Refresh Rate**: 60 FPS for smooth animations
 - **Clock Update**: Every 1 second
+- **Hardware Stats Update**: Every 2 seconds
 - **Contrast Check**: Every 0.2 seconds (efficient background sampling)
 - **Memory Footprint**: Minimal (~30-50 MB)
 - **CPU Usage**: Low (mainly event-driven)
