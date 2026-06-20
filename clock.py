@@ -7,6 +7,15 @@ import time
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import psutil
+import subprocess
+import shutil
+try:
+    import GPUtil
+    HAS_GPU_SUPPORT = True
+except ImportError:
+    HAS_GPU_SUPPORT = False
+from background_sheet import draw_background_sheet
 
 class AnalogClock(QWidget):
     CLOCK_SIZE = 160
@@ -20,8 +29,12 @@ class AnalogClock(QWidget):
     BUTTON_TOP_GAP = 44
     # (top control area reserved for controls)
     CLOCKS_HEIGHT = CLOCK_SIZE * 2 + CLOCK_SPACING
+    # Hardware specs panel (positioned to the right of clocks)
+    HARDWARE_PANEL_HEIGHT = 110
+    HARDWARE_PANEL_WIDTH = 90
+    SPECS_PANEL_SPACING = 24
     WINDOW_HEIGHT = CLOCKS_HEIGHT + CONTROLS_SPACE
-    WINDOW_WIDTH = CLOCK_SIZE + (HORIZONTAL_PADDING * 2) + SIDE_SLIDER_SPACE
+    WINDOW_WIDTH = CLOCK_SIZE + (HORIZONTAL_PADDING * 2) + SIDE_SLIDER_SPACE + HARDWARE_PANEL_WIDTH + SPECS_PANEL_SPACING
     # (opacity control removed)
     COLOR_TRANSITION_SECONDS = 0.35
     CONTRAST_CHECK_SECONDS = 0.2
@@ -29,17 +42,26 @@ class AnalogClock(QWidget):
 
     def __init__(self):
         super().__init__()
-        # start as always-on-top; double-click will toggle this
         self.always_on_top = True
         self.apply_always_on_top_flags()
         self.setAttribute(Qt.WA_TranslucentBackground)
         # keep the clock window at 60% opacity for consistent transparency
         self.setWindowOpacity(0.60)
         self.setFixedSize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT)
+        # Hardware stats storage
+        self.cpu_percent = 0
+        self.ram_percent = 0
+        self.gpu_percent = 0
+        self.gpu_vram_percent = 0
+        self.gpu_available = False
         # opacity controls removed; reserve a top control area instead
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self.update)
         self.clock_timer.start(1000)
+        # Hardware stats timer - updates every 2 seconds
+        self.hardware_timer = QTimer(self)
+        self.hardware_timer.timeout.connect(self.update_hardware_stats)
+        self.hardware_timer.start(2000)
         self.display_color = QColor(Qt.black)
         self.start_color = QColor(self.display_color)
         self.target_color = QColor(self.display_color)
@@ -51,10 +73,6 @@ class AnalogClock(QWidget):
         self.visibility_timer = QTimer(self)
         self.visibility_timer.timeout.connect(self.ensure_on_top)
         self.visibility_timer.start(round(self.KEEP_ON_TOP_SECONDS * 1000))
-        # timer to auto-restore always-on-top after a short snooze
-        self.restore_timer = QTimer(self)
-        self.restore_timer.setSingleShot(True)
-        self.restore_timer.timeout.connect(self._restore_always_on_top)
         self.old_pos = None
         self.berlin_tz = ZoneInfo("Europe/Berlin")
         self.mumbai_tz = ZoneInfo("Asia/Kolkata")
@@ -64,6 +82,8 @@ class AnalogClock(QWidget):
         self.top_control_offset = 12
         # enlarge window height to include the top control area
         self.setFixedSize(self.WINDOW_WIDTH, self.WINDOW_HEIGHT + self.top_control_offset)
+        # Update hardware stats immediately
+        self.update_hardware_stats()
         self.move_to_bottom_left()
 
     def apply_always_on_top_flags(self):
@@ -157,6 +177,57 @@ class AnalogClock(QWidget):
                 return "AC"
 
         return None
+
+    def update_hardware_stats(self):
+        """Update CPU, RAM, GPU, and VRAM usage percentages."""
+        try:
+            self.cpu_percent = psutil.cpu_percent(interval=0.1)
+        except Exception:
+            self.cpu_percent = 0
+
+        try:
+            self.ram_percent = psutil.virtual_memory().percent
+        except Exception:
+            self.ram_percent = 0
+        # Attempt to get GPU stats via GPUtil (if available)
+        self.gpu_available = False
+        if HAS_GPU_SUPPORT:
+            try:
+                gpus = GPUtil.getGPUs()
+                if gpus:
+                    gpu = gpus[0]
+                    # GPUtil provides load as a float 0..1
+                    self.gpu_percent = (gpu.load or 0.0) * 100
+                    # memoryUsed and memoryTotal may be provided (MB)
+                    total = getattr(gpu, 'memoryTotal', 0) or 0
+                    used = getattr(gpu, 'memoryUsed', 0) or 0
+                    self.gpu_vram_percent = (used / total) * 100 if total > 0 else 0.0
+                    self.gpu_available = True
+            except Exception:
+                self.gpu_available = False
+
+        # Fallback: try nvidia-smi if GPUtil is unavailable or didn't return data
+        if not self.gpu_available:
+            try:
+                if shutil.which('nvidia-smi'):
+                    cmd = [
+                        'nvidia-smi',
+                        '--query-gpu=utilization.gpu,memory.total,memory.used',
+                        '--format=csv,noheader,nounits',
+                    ]
+                    out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+                    first_line = out.strip().splitlines()[0]
+                    parts = [p.strip() for p in first_line.split(',')]
+                    if len(parts) >= 3:
+                        util = 0.0 if parts[0] in ('N/A', '') else float(parts[0])
+                        mem_total = 0.0 if parts[1] in ('N/A', '') else float(parts[1])
+                        mem_used = 0.0 if parts[2] in ('N/A', '') else float(parts[2])
+                        self.gpu_percent = util
+                        self.gpu_vram_percent = (mem_used / mem_total) * 100 if mem_total > 0 else 0.0
+                        self.gpu_available = True
+            except Exception:
+                # any errors mean GPU info is not available via this fallback
+                self.gpu_available = False
 
     def keep_visible(self):
         if self.windowState() & Qt.WindowMinimized:
@@ -264,7 +335,7 @@ class AnalogClock(QWidget):
         scale = self.CLOCK_SIZE / 200
         center_x = top_left_x + self.CLOCK_SIZE / 2
         center_y = top_left_y + self.CLOCK_SIZE / 2
-        margin = 10 * scale
+        margin = 10 * scale - 3
         face_size = self.CLOCK_SIZE - (margin * 2)
         number_radius = 80 * scale
         hour_hand = 48 * scale
@@ -380,6 +451,101 @@ class AnalogClock(QWidget):
             border_color,
         )
 
+    def draw_hardware_specs(self, painter):
+        """Draw the hardware specs panel with CPU, RAM, GPU, and VRAM usage on the right side."""
+        clock_color = QColor(self.display_color)
+        border_color = self.opposite_color(clock_color)
+        
+        # Calculate panel position (right side of clocks, vertically centered)
+        scale = self.CLOCK_SIZE / 200
+        margin = 10 * scale
+        clocks_x = self.HORIZONTAL_PADDING
+        top_y = margin + getattr(self, 'top_control_offset', 0)
+        
+        # Position panel to the right of clocks, vertically centered
+        panel_x = clocks_x + self.CLOCK_SIZE + self.SPECS_PANEL_SPACING
+        panel_y = top_y + (self.CLOCKS_HEIGHT - self.HARDWARE_PANEL_HEIGHT) / 2
+        
+        # Panel dimensions
+        panel_width = self.HARDWARE_PANEL_WIDTH
+        panel_height = self.HARDWARE_PANEL_HEIGHT
+
+        # Background for the specs panel is drawn separately as an independent
+        # rounded sheet in the main paintEvent so the panel and clocks appear
+        # visually distinct. Keep this function focused on text rendering.
+
+        # Set up font for specs text
+        specs_font = painter.font()
+        specs_font.setPointSize(10)
+        specs_font.setBold(True)
+        painter.setFont(specs_font)
+        
+        # Calculate line height and spacing
+        line_height = 19
+        padding = 6
+        
+        # Prepare specs text
+        cpu_text = f"CPU: {self.cpu_percent:.0f}%"
+        ram_text = f"RAM: {self.ram_percent:.0f}%"
+        gpu_text = f"GPU: {self.gpu_percent:.0f}%" if self.gpu_available else "GPU: N/A"
+        vram_text = f"VRAM: {self.gpu_vram_percent:.0f}%" if self.gpu_available else "VRAM: N/A"
+        
+        # Get battery info for display in specs panel
+        battery_percent = self.battery_percent()
+        battery_state = self.battery_power_state()
+        battery_text = "--%" if battery_percent is None else f"{battery_percent}%"
+        if battery_state is not None:
+            battery_text = f"{battery_text} {battery_state}"
+        
+        # Draw specs text lines
+        text_x = panel_x + padding + 1
+        text_y = panel_y + padding
+        
+        self.draw_outlined_text(
+            painter,
+            QRectF(text_x, text_y, panel_width - (padding * 2), line_height),
+            Qt.AlignLeft,
+            cpu_text,
+            clock_color,
+            border_color,
+        )
+        
+        self.draw_outlined_text(
+            painter,
+            QRectF(text_x, text_y + line_height, panel_width - (padding * 2), line_height),
+            Qt.AlignLeft,
+            ram_text,
+            clock_color,
+            border_color,
+        )
+        
+        self.draw_outlined_text(
+            painter,
+            QRectF(text_x, text_y + (line_height * 2), panel_width - (padding * 2), line_height),
+            Qt.AlignLeft,
+            gpu_text,
+            clock_color,
+            border_color,
+        )
+        
+        self.draw_outlined_text(
+            painter,
+            QRectF(text_x, text_y + (line_height * 3), panel_width - (padding * 2), line_height),
+            Qt.AlignLeft,
+            vram_text,
+            clock_color,
+            border_color,
+        )
+        
+        self.draw_outlined_text(
+            painter,
+            QRectF(text_x, text_y + (line_height * 4), panel_width - (padding * 2), line_height),
+            Qt.AlignLeft,
+            f" {battery_text}",
+            clock_color,
+            border_color,
+        )
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -390,53 +556,59 @@ class AnalogClock(QWidget):
         # Stack the two clocks vertically; account for reserved top control area
         clocks_x = self.HORIZONTAL_PADDING
         top_y = margin + getattr(self, 'top_control_offset', 0)
+        # Determine adaptive sheet color based on display_color
+        # If display_color is dark (white text), sheet should be dark to match
+        # If display_color is light (black text), sheet should be light
+        clock_color = QColor(self.display_color)
+        is_light_desktop = clock_color == QColor(Qt.black)  # black text means light background
+        sheet_color = QColor(Qt.white) if is_light_desktop else QColor(Qt.black)
+        sheet_opacity = 0.82
+        
+        # Draw the specs sheet
+        sheet_padding = 8
+        panel_x = clocks_x + self.CLOCK_SIZE + self.SPECS_PANEL_SPACING
+        panel_y = top_y + (self.CLOCKS_HEIGHT - self.HARDWARE_PANEL_HEIGHT) / 2
+        specs_sheet_x = panel_x - sheet_padding
+        specs_sheet_y = panel_y - sheet_padding
+        specs_sheet_w = self.HARDWARE_PANEL_WIDTH + (sheet_padding * 2)
+        specs_sheet_h = self.HARDWARE_PANEL_HEIGHT + (sheet_padding * 2)
+        draw_background_sheet(painter, specs_sheet_x, specs_sheet_y, specs_sheet_w, specs_sheet_h, sheet_color, sheet_opacity, radius=12)
+
+        # Draw clocks and specs content
         self.draw_clock(painter, clocks_x, top_y, berlin_now)
         self.draw_clock(painter, clocks_x, top_y + self.CLOCK_SIZE + self.CLOCK_SPACING, mumbai_now)
-        self.draw_battery_indicator(painter)
+        self.draw_hardware_specs(painter)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.old_pos = event.globalPos()
-
-    def mouseDoubleClickEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.toggle_always_on_top()
-
-    def toggle_always_on_top(self):
-        self.always_on_top = not getattr(self, "always_on_top", True)
-        self.apply_always_on_top_flags()
-        # re-show so the window manager applies new flags
-        self.show()
-        if self.always_on_top:
-            # stop any pending auto-restore if user re-enabled early
-            try:
-                self.restore_timer.stop()
-            except Exception:
-                pass
-            self.raise_()
-            self.activateWindow()
-        else:
-            # send to background so user can interact with underlying UI
-            # and schedule auto-restore after 5 seconds
-            try:
-                self.restore_timer.start(5000)
-            except Exception:
-                pass
-            self.lower()
-
-    def _restore_always_on_top(self):
-        # called by the single-shot timer to restore the always-on-top state
-        self.always_on_top = True
-        self.apply_always_on_top_flags()
-        self.show()
-        self.raise_()
-        self.activateWindow()
 
     def mouseMoveEvent(self, event):
         if self.old_pos:
             delta = event.globalPos() - self.old_pos
             self.move_horizontally_at_bottom(delta.x())
             self.old_pos = event.globalPos()
+
+    def enterEvent(self, event):
+        screen = QApplication.screenAt(self.mapToGlobal(self.rect().center()))
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+
+        geometry = screen.availableGeometry()
+        window_right = self.x() + self.width()
+        dist_left = self.x() - geometry.left()
+        dist_right = geometry.right() - window_right
+        margin = round(geometry.width() * 0.1)
+
+        if dist_left >= dist_right:
+            x = geometry.left() + margin
+        else:
+            x = geometry.right() - self.width() - margin + 1
+
+        self.move(x, self.bottom_y(geometry))
+        super().enterEvent(event)
 
     def mouseReleaseEvent(self, event):
         self.old_pos = None
